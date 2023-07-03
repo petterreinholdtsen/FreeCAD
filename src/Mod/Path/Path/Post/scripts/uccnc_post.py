@@ -65,7 +65,6 @@ Other (Stepcraft) machines using UC-CNC and UC* controllers should be easy to ad
 PREAMBLE_DEFAULT = """G17 (Default: XY-plane)
 G54 (Default: First coordinate system)
 G40 (Default: Cutter radius compensation none)
-G49 (Default: Tool Length Offsets: cancel tool length)
 G90 (Default: Absolute distance mode selection)
 G80 (Cancel canned cycle)
 """
@@ -73,7 +72,6 @@ G80 (Cancel canned cycle)
 PREAMBLE_DEFAULT_NO_COMMENT = """G17
 G54
 G40
-G49
 G90
 G80
 """
@@ -673,8 +671,11 @@ def parse(pathobj):
 
                 # add height offset
                 if USE_TLO:
+                    commandlist.append("G49")
                     tool_height = "\nG43 H" + str(int(c.Parameters["T"]))
                     commandlist.append(tool_height)
+                else:
+                    commnadlist.append("G49")
 
             if command == "message":
                 if OUTPUT_COMMENTS is False:

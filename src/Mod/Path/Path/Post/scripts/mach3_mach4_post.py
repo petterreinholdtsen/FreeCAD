@@ -110,7 +110,7 @@ CORNER_MAX = {"x": 500, "y": 300, "z": 300}
 PRECISION = 3
 
 # Preamble text will appear at the beginning of the GCODE output file.
-PREAMBLE = """G17 G54 G40 G49 G80 G90
+PREAMBLE = """G17 G54 G40 G80 G90
 """
 
 # Postamble text will appear following the last operation.
@@ -490,8 +490,11 @@ def parse(pathobj):
 
                 # add height offset
                 if USE_TLO:
+                    outstring.append("G49")
                     tool_height = "\nG43 H" + str(int(c.Parameters["T"]))
                     outstring.append(tool_height)
+                else:
+                    outstring.append("G49")
 
             if command == "message":
                 if OUTPUT_COMMENTS is False:
