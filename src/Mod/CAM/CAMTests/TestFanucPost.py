@@ -25,7 +25,8 @@ import FreeCAD
 
 import Path
 from CAMTests import PathTestUtils
-from Path.Post.scripts import fanuc_post as postprocessor
+from CAMTests import PostTestMocks
+from Path.Post.Processor import PostProcessorFactory
 
 
 Path.Log.setLevel(Path.Log.Level.DEBUG, Path.Log.thisModule())
@@ -44,9 +45,6 @@ class TestFanucPost(PathTestUtils.PathTestBase):
         is able to call static methods within this same class.
         """
 
-        # Open existing FreeCAD document with test geometry
-        FreeCAD.newDocument("TestCamFanucPost")
-
     @classmethod
     def tearDownClass(cls):
         """tearDownClass()...
@@ -56,8 +54,6 @@ class TestFanucPost(PathTestUtils.PathTestBase):
         not have access to the class `self` reference.  This method is able
         to call static methods within this same class.
         """
-        # Close geometry document without saving
-        FreeCAD.closeDocument(FreeCAD.ActiveDocument.Name)
 
     # Setup and tear down methods called before and after each unit test
     def setUp(self):
@@ -65,41 +61,60 @@ class TestFanucPost(PathTestUtils.PathTestBase):
         This method is called prior to each `test()` method.  Add code and
         objects here that are needed for multiple `test()` methods.
         """
-        self.doc = FreeCAD.ActiveDocument
-        self.con = FreeCAD.Console
-        self.docobj = FreeCAD.ActiveDocument.addObject("Path::Feature", "testpath")
+
+        # Create mock job with default operation and tool controller
+        self.job, self.profile_op, self.tool_controller = (
+            PostTestMocks.create_default_job_with_operation()
+        )
+
+        # Create postprocessor using the mock job
+        self.post = PostProcessorFactory.get_post_processor(self.job, "fanuc")
+
         # allow a full length "diff" if an error occurs
         self.maxDiff = None
+        # reinitialize the postprocessor data structures between tests
+        self.post.reinitialize()
 
     def tearDown(self):
         """tearDown()...
         This method is called after each test() method. Add cleanup instructions here.
         Such cleanup instructions will likely undo those in the setUp() method.
         """
-        FreeCAD.ActiveDocument.removeObject("testpath")
 
     def test_empty_path(self):
         """Test Output Generation.
         Empty path.  Produces only the preamble and postable.
         """
 
-        self.docobj.Path = Path.Path([])
-        postables = [self.docobj]
+        self.profile_op.Path = Path.Path([])
+        self.job.PostProcessorArgs = (
+            "--no-show-editor"
+        )
 
         # Test generating with header
         # Header contains a time stamp that messes up unit testing.
         # Only test length of result.
-        args = "--no-show-editor"
-        gcode = postprocessor.export(postables, "-", args)
-        self.assertEqual(18, len(gcode.splitlines()))
+        gcode = self.post.export()[0][1]
+        self.assertEqual(29, len(gcode.splitlines()))
         # Test without header
         expected = """%
 (BEGIN PREAMBLE)
 G17 G54 G40 G49 G80 G90
 G21
-(BEGIN OPERATION: TESTPATH)
+(BEGIN OPERATION: TC: DEFAULT TOOL)
 (MACHINE UNITS: MM/MIN)
-(FINISH OPERATION: TESTPATH)
+M5
+M6 T1 
+G43 H1
+M3 S1000
+(FINISH OPERATION: TC: DEFAULT TOOL)
+(BEGIN OPERATION: FIXTURE)
+(MACHINE UNITS: MM/MIN)
+G54
+(FINISH OPERATION: FIXTURE)
+(BEGIN OPERATION: PROFILE)
+(MACHINE UNITS: MM/MIN)
+(FINISH OPERATION: PROFILE)
 (BEGIN POSTAMBLE)
 M05
 G17 G54 G90 G80 G40
@@ -108,18 +123,24 @@ M2
 %
 """
 
-        self.docobj.Path = Path.Path([])
-        postables = [self.docobj]
+        self.profile_op.Path = Path.Path([])
+        self.job.PostProcessorArgs = (
+            "--no-header --no-show-editor"
+            # "--no-header --no-comments --no-show-editor --precision=2"
+        )
 
-        args = "--no-header --no-show-editor"
-        # args = ("--no-header --no-comments --no-show-editor --precision=2")
-        gcode = postprocessor.export(postables, "-", args)
+        gcode = self.post.export()[0][1]
         self.assertEqual(gcode, expected)
 
         # test without comments
         expected = """%
 G17 G54 G40 G49 G80 G90
 G21
+M5
+M6 T1 
+G43 H1
+M3 S1000
+G54
 M05
 G17 G54 G90 G80 G40
 M6 T0
@@ -127,9 +148,12 @@ M2
 %
 """
 
-        args = "--no-header --no-comments --no-show-editor"
-        # args = ("--no-header --no-comments --no-show-editor --precision=2")
-        gcode = postprocessor.export(postables, "-", args)
+        self.profile_op.Path = Path.Path([])
+        self.job.PostProcessorArgs = (
+            "--no-header --no-comments --no-show-editor"
+            # "--no-header --no-comments --no-show-editor --precision=2"
+        )
+        gcode = self.post.export()[0][1]
         self.assertEqual(gcode, expected)
 
     def test_precision(self):
@@ -138,18 +162,20 @@ M2
         """
         c = Path.Command("G0 X10 Y20 Z30")
 
-        self.docobj.Path = Path.Path([c])
-        postables = [self.docobj]
-
-        args = "--no-header --no-show-editor"
-        gcode = postprocessor.export(postables, "-", args)
-        result = gcode.splitlines()[6]
+        self.profile_op.Path = Path.Path([c])
+        self.job.PostProcessorArgs = (
+            "--no-header --no-show-editor"
+        )
+        gcode = self.post.export()[0][1]
+        result = gcode.splitlines()[17]
         expected = "G0 X10.000 Y20.000 Z30.000"
         self.assertEqual(result, expected)
 
-        args = "--no-header --precision=2 --no-show-editor"
-        gcode = postprocessor.export(postables, "-", args)
-        result = gcode.splitlines()[6]
+        self.job.PostProcessorArgs = (
+            "--no-header --precision=2 --no-show-editor"
+        )
+        gcode = self.post.export()[0][1]
+        result = gcode.splitlines()[17]
         expected = "G0 X10.00 Y20.00 Z30.00"
         self.assertEqual(result, expected)
 
@@ -159,13 +185,13 @@ M2
         """
         c = Path.Command("G0 X10 Y20 Z30")
 
-        self.docobj.Path = Path.Path([c])
-        postables = [self.docobj]
-
-        args = "--no-header --line-numbers --no-show-editor"
-        gcode = postprocessor.export(postables, "-", args)
-        result = gcode.splitlines()[6]
-        expected = "N160  G0 X10.000 Y20.000 Z30.000"
+        self.profile_op.Path = Path.Path([c])
+        self.job.PostProcessorArgs = (
+            "--no-header --line-numbers --no-show-editor"
+        )
+        gcode = self.post.export()[0][1]
+        result = gcode.splitlines()[17]
+        expected = "N260  G0 X10.000 Y20.000 Z30.000"
         self.assertEqual(result, expected)
 
     def test_pre_amble(self):
@@ -173,11 +199,11 @@ M2
         Test Pre-amble
         """
 
-        self.docobj.Path = Path.Path([])
-        postables = [self.docobj]
-
-        args = "--no-header --no-comments --preamble='G18 G55' --no-show-editor"
-        gcode = postprocessor.export(postables, "-", args)
+        self.profile_op.Path = Path.Path([])
+        self.job.PostProcessorArgs = (
+            "--no-header --no-comments --preamble='G18 G55' --no-show-editor"
+        )
+        gcode = self.post.export()[0][1]
         result = gcode.splitlines()[1]
         self.assertEqual(result, "G18 G55")
 
@@ -185,10 +211,11 @@ M2
         """
         Test Post-amble
         """
-        self.docobj.Path = Path.Path([])
-        postables = [self.docobj]
-        args = "--no-header --no-comments --postamble='G0 Z50\nM2' --no-show-editor"
-        gcode = postprocessor.export(postables, "-", args)
+        self.profile_op.Path = Path.Path([])
+        self.job.PostProcessorArgs = (
+            "--no-header --no-comments --postamble='G0 Z50\nM2' --no-show-editor"
+        )
+        gcode = self.post.export()[0][1]
         self.assertEqual(gcode.splitlines()[-3], "G0 Z50")
         self.assertEqual(gcode.splitlines()[-2], "M2")
         self.assertEqual(gcode.splitlines()[-1], "%")
@@ -199,20 +226,22 @@ M2
         """
 
         c = Path.Command("G0 X10 Y20 Z30")
-        self.docobj.Path = Path.Path([c])
-        postables = [self.docobj]
-
-        args = "--no-header --inches --no-show-editor"
-        gcode = postprocessor.export(postables, "-", args)
+        self.profile_op.Path = Path.Path([c])
+        self.job.PostProcessorArgs = (
+            "--no-header --inches --no-show-editor"
+        )
+        gcode = self.post.export()[0][1]
         self.assertEqual(gcode.splitlines()[3], "G20")
 
-        result = gcode.splitlines()[6]
+        result = gcode.splitlines()[17]
         expected = "G0 X0.3937 Y0.7874 Z1.1811"
         self.assertEqual(result, expected)
 
-        args = "--no-header --inches --precision=2 --no-show-editor"
-        gcode = postprocessor.export(postables, "-", args)
-        result = gcode.splitlines()[6]
+        self.job.PostProcessorArgs = (
+            "--no-header --inches --precision=2 --no-show-editor"
+        )
+        gcode = self.post.export()[0][1]
+        result = gcode.splitlines()[17]
         expected = "G0 X0.39 Y0.79 Z1.18"
         self.assertEqual(result, expected)
 
@@ -220,22 +249,44 @@ M2
         """
         Test tool change
         """
-        c = Path.Command("M6 T2")
+        c = Path.Command("M6 T1")
         c2 = Path.Command("M3 S3000")
-        self.docobj.Path = Path.Path([c, c2])
-        postables = [self.docobj]
-
-        args = "--no-header --no-show-editor"
-        gcode = postprocessor.export(postables, "-", args)
-        self.assertEqual(gcode.splitlines()[5], "M5")
-        self.assertEqual(gcode.splitlines()[6], "M6 T2 ")
-        self.assertEqual(gcode.splitlines()[7], "G43 H2")
-        self.assertEqual(gcode.splitlines()[8], "M3 S3000")
+        self.profile_op.Path = Path.Path([c,c2])
+        self.job.PostProcessorArgs = (
+            "--no-header --no-show-editor"
+        )
+        gcode = self.post.export()[0][1]
+        self.assertEqual(gcode.splitlines()[17], "M5")
+        self.assertEqual(gcode.splitlines()[18], "M6 T1 ")
+        self.assertEqual(gcode.splitlines()[19], "G43 H1")
+        self.assertEqual(gcode.splitlines()[20], "M3 S3000")
 
         # suppress TLO
-        args = "--no-header --no-tlo --no-show-editor"
-        gcode = postprocessor.export(postables, "-", args)
-        self.assertEqual(gcode.splitlines()[7], "M3 S3000")
+        self.job.PostProcessorArgs = (
+            "--no-header --no-tlo --no-show-editor"
+        )
+        gcode = self.post.export()[0][1]
+        self.assertEqual(gcode.splitlines()[18], "M3 S3000")
+
+    def test_thread_tap(self):
+        """
+        Test threading using drill cycle converted to tapping
+        """
+
+        self.tool_controller.Tool.ShapeID = "tap"
+        c = Path.Command("G0 X10 Y10")
+        c2 = Path.Command("G81 X10 Y10 Z-10 R20 F1 P1 Q1")
+        self.profile_op.Path = Path.Path([c,c2])
+        self.job.PostProcessorArgs = (
+            "--no-header --no-show-editor"
+        )
+        gcode = self.post.export()[0][1]
+        self.assertEqual(gcode.splitlines()[16], "G0 X10.000 Y10.000")
+        self.assertEqual(gcode.splitlines()[17], "G95")
+        self.assertEqual(gcode.splitlines()[18], "M29 S1000")
+        self.assertEqual(gcode.splitlines()[19], "G84 Z-10.000 R20.000 F1.000 P1.000 Q1.000")
+        self.assertEqual(gcode.splitlines()[20], "G80")
+        self.assertEqual(gcode.splitlines()[21], "G94")
 
     def test_comment(self):
         """
@@ -244,11 +295,11 @@ M2
 
         c = Path.Command("(comment)")
 
-        self.docobj.Path = Path.Path([c])
-        postables = [self.docobj]
-
-        args = "--no-header --no-show-editor"
-        gcode = postprocessor.export(postables, "-", args)
-        result = gcode.splitlines()[6]
+        self.profile_op.Path = Path.Path([c])
+        self.job.PostProcessorArgs = (
+            "--no-header --no-show-editor"
+        )
+        gcode = self.post.export()[0][1]
+        result = gcode.splitlines()[17]
         expected = "(COMMENT)"
         self.assertEqual(result, expected)
